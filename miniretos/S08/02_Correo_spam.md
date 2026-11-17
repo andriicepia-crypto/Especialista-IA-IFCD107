@@ -1,0 +1,192 @@
+# 📧 Miniapp 2 · ¿Spam o correo de verdad?
+
+⭐⭐ · 50 min · **clasificación** · practica S07 (logística, Naive Bayes) y S08 (árbol y bosque)
+
+## Qué construyes
+- Un **filtro de spam**: le pasas un correo y te dice «spam» o «correo normal», con su probabilidad.
+- Lo haces de **dos formas** y las comparas: con pistas que calculáis vosotros (exclamaciones, enlaces…) y con las **palabras** del correo.
+
+## Datos
+- `correos.csv`: 1 500 correos en español **inventados** (asunto, texto y `es_spam`: 1 = spam, 0 = normal).
+- Hay correos normales con «URGENTE» o «gratis» y spam muy educado: no es tan fácil como parece.
+
+## Paso a paso
+
+1. **Carga y lee unos cuantos.** ¿Qué os delata un spam?
+
+```python
+import warnings; warnings.filterwarnings("ignore")
+import pandas as pd, numpy as np, matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.dummy import DummyClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.tree import DecisionTreeClassifier, export_text
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+URL = "https://raw.githubusercontent.com/cCoolBoox/IFCD107-alumnado/main/datos/correos.csv"
+df = pd.read_csv(URL)
+df["completo"] = df["asunto"] + " " + df["texto"]
+print("Spam:", round(df["es_spam"].mean(), 2), "· correos:", len(df))
+df.sample(6, random_state=1)[["asunto", "es_spam"]]
+```
+
+2. **Inventa pistas (variables).** Cada columna nueva es una pregunta sobre el correo.
+
+```python
+t = df["completo"]
+pistas = pd.DataFrame({
+    "exclamaciones": t.str.count("!"),
+    "pct_mayusculas": t.apply(lambda s: sum(c.isupper() for c in s) / len(s)),
+    "enlaces": t.str.count("http"),
+    "digitos": t.str.count(r"\d"),
+    "palabras_gancho": t.str.lower().str.count("gratis|urgente|oferta|gana|premio|descuento"),
+})
+y = df["es_spam"]
+print(pistas.groupby(y).mean().round(2))     # media de cada pista en normales (0) y spam (1)
+```
+
+3. **Separa.** El examen (`test`) no se mira hasta el final.
+
+```python
+P_train, P_test, T_train, T_test, y_train, y_test = train_test_split(
+    pistas, t, y, test_size=0.2, random_state=42, stratify=y)
+print(len(y_train), "para entrenar ·", len(y_test), "para el examen (NO mirar)")
+```
+
+4. **Duelo A: con vuestras pistas.** Acierto con validación cruzada (solo `train`).
+
+```python
+con_pistas = {
+    "Nunca spam (tonto)": DummyClassifier(strategy="prior"),
+    "Logística": make_pipeline(StandardScaler(), LogisticRegression()),
+    "Árbol (profundidad 3)": DecisionTreeClassifier(max_depth=3, random_state=42),
+    "Bosque": RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=2),
+}
+for n, m in con_pistas.items():
+    print(f"{n:24s} {cross_val_score(m, P_train, y_train, cv=5).mean():.3f}")
+
+arbol = con_pistas["Árbol (profundidad 3)"].fit(P_train, y_train)
+print(export_text(arbol, feature_names=list(pistas.columns)))       # las reglas que ha aprendido
+```
+
+5. **Duelo B: con las palabras.** `CountVectorizer` cuenta cuántas veces sale cada palabra; con eso, Naive Bayes y la logística.
+
+```python
+con_palabras = {
+    "Palabras + Naive Bayes": make_pipeline(CountVectorizer(), MultinomialNB()),
+    "Palabras + Logística": make_pipeline(TfidfVectorizer(), LogisticRegression(max_iter=1000)),
+}
+for n, m in con_palabras.items():
+    print(f"{n:24s} {cross_val_score(m, T_train, y_train, cv=5).mean():.3f}")
+
+voc = con_palabras["Palabras + Logística"].fit(T_train, y_train)
+palabras = np.array(voc[0].get_feature_names_out())
+peso = voc[1].coef_[0]
+orden = peso.argsort()
+print("Delatan SPAM:", list(palabras[orden[-8:]][::-1]))
+print("Delatan NORMAL:", list(palabras[orden[:8]]))
+```
+
+6. **El examen: UNA vez, con el campeón** (cambia `campeon` por el tuyo). Aquí un error no vale igual: un correo bueno en la carpeta de spam es peor que un spam que se cuela.
+
+```python
+campeon = voc                      # o con_pistas["Bosque"].fit(P_train, y_train), etc.
+entrada = T_test                   # con el bosque o el árbol: P_test
+pred = campeon.predict(entrada)
+vn, fp, fn, vp = confusion_matrix(y_test, pred).ravel()
+print(f"Acierta {(vn + vp) / len(y_test):.3f} · spam que se cuela (FN): {fn} · correos buenos a la basura (FP): {fp}")
+ConfusionMatrixDisplay.from_predictions(y_test, pred, display_labels=["normal", "spam"], cmap="Blues", colorbar=False)
+plt.show()
+```
+
+## Tu app
+- Una función que lee un correo y dice si es spam. Prueba **tus propios correos**: uno normal, uno de spam y uno «difícil» (un correo normal con «gratis» o «urgente»).
+
+```python
+def es_spam(texto, umbral=0.5):
+    p = campeon.predict_proba([texto])[0, 1]        # solo con el modelo de palabras
+    return f"{'SPAM' if p >= umbral else 'normal'} (probabilidad de spam: {p:.2f})"
+
+print(es_spam("Hola Marta, mañana a las 10 reunión de equipo. Trae el informe."))
+print(es_spam("¡¡GANA 5000 EUROS GRATIS!! Pulsa aquí YA http://premio.xyz"))
+print(es_spam("URGENTE: hay un taller gratis para familias el jueves"))
+```
+
+## Qué deberías ver
+- **42 % de spam** (0,42) y, en las pistas, el spam tiene más exclamaciones, enlaces y palabras gancho.
+- Duelo A (acierto): tonto **0,58** · logística ≈ 0,85 · árbol ≈ 0,92 · bosque ≈ **0,99**.
+- El árbol pregunta primero por los **enlaces**, luego por las **exclamaciones** y las **palabras gancho**.
+- Duelo B (palabras): Naive Bayes ≈ **0,99** · logística ≈ **0,99**. Delatan spam `http`, `xyz`, `pastillas`, `euros`…; delatan normal `gracias`, `pedido`, `puedes`…
+- Examen con la logística de palabras: acierta ≈ **0,98**; **4 spam se cuelan** y **1 correo bueno** va a la basura.
+- La app: ≈ 0,10 (normal) · ≈ 0,93 (spam) · ≈ 0,18 (el «difícil» con «gratis»: lo deja pasar).
+- Tus cifras pueden diferir en el último decimal.
+
+## Extra 🔴
+- Sube el `umbral` a 0,8: ¿cuántos correos buenos dejas de perder y cuántos spam se cuelan?
+- Escribe **3 pistas nuevas** (por ejemplo, si el asunto lleva «¡¡» o si hay la palabra «euros») y mira si el árbol las usa.
+- Mira los **errores del examen**: ¿qué tienen en común?
+
+## Cuidado
+- **No borrar correos solo por lo que diga el modelo**: mejor mandarlos a una carpeta de spam que se pueda revisar.
+- Un modelo entrenado con estos correos no sabe nada de estafas nuevas: hay que **reentrenarlo** cuando cambian.
+
+## 🔑 Solucionario (Extra)
+> Míralo **después** de intentarlo. Las cifras salen de ejecutar la ficha tal cual y pueden variar un poco (librerías, semilla): lo que cuenta es la **conclusión**.
+
+#### Extra 1 · Umbral 0,8
+- **Qué hacer:**
+  1. Calcula las probabilidades del examen y cuenta errores con el umbral 0,5 y con 0,8.
+  2. Si no cambia nada, mira cómo reparte probabilidades el modelo.
+```python
+proba_t = campeon.predict_proba(T_test)[:, 1]
+for u in (0.5, 0.8):
+    vn, fp, fn, vp = confusion_matrix(y_test, proba_t >= u).ravel()
+    print(f"umbral {u}: spam que se cuelan {fn} · correos buenos a la basura {fp}")
+```
+- **Qué sale y por qué:**
+  - **no cambia nada** (4 spam se cuelan y 1 correo bueno va a la basura, igual que con 0,5). Las probabilidades de la logística de palabras son **muy extremas** (cerca de 0 o de 1): subir el listón no mueve a nadie.
+  - Para comentar: «subir el umbral» **no siempre funciona**; depende de **cómo reparte el modelo sus probabilidades**.
+
+#### Extra 2 · Tres pistas nuevas
+- **Qué hacer:**
+  1. Escribe una función que cuente tus 3 pistas nuevas (por ejemplo `!!`, «euros» y `.xyz`), añádelas a las pistas de `train` y entrena otro árbol.
+  2. Mira `feature_importances_`: si valen 0, el árbol no las usa.
+```python
+def pistas_nuevas(t):
+    return pd.DataFrame({"dobles": t.str.count("!!|¡¡"), "euros": t.str.lower().str.count("euros"), "xyz": t.str.count(r"\.xyz")})
+
+P2 = pd.concat([P_train.reset_index(drop=True), pistas_nuevas(T_train).reset_index(drop=True)], axis=1)
+arbol2 = DecisionTreeClassifier(max_depth=3, random_state=42).fit(P2, y_train.values)
+print(pd.Series(arbol2.feature_importances_, index=P2.columns).round(2))
+print("acierto con validación cruzada:", round(cross_val_score(DecisionTreeClassifier(max_depth=3, random_state=42), P2, y_train.values, cv=5).mean(), 3))
+```
+- **Qué sale y por qué:**
+  - (`!!`/`¡¡`, «euros», `.xyz`): el árbol sigue en **0,922** y **no las usa** (importancia 0). Con profundidad 3, el árbol ya tiene bastante con `enlaces` y `exclamaciones` y **no necesita** las nuevas.
+  - Para comentar: una pista es útil por **lo que aporta además de las demás**, no por tener sentido.
+
+#### Extra 3 · Errores del examen (5)
+- **Qué hacer:**
+  1. Busca los correos del examen donde `pred != y_test` y léelos.
+  2. Anota qué tienen en común (¿palabras de oferta en un correo bueno? ¿lenguaje normal en un spam?).
+```python
+pred = campeon.predict(T_test)
+for i in np.where(pred != y_test.values)[0]:
+    print("real:", "spam" if y_test.iloc[i] else "normal", "|", T_test.iloc[i][:120])
+```
+- **Qué sale y por qué:**
+  - **4 spam disfrazados de correo normal**: «Cumpleaños de mamá… es una sorpresa», «Cita confirmada…» (dos veces) y «OFERTA para empleados». **Suena a mensaje real.**
+  - **1 correo bueno** con **lenguaje de oferta** («Oferta exclusiva… 80 % de descuento»: boletín legítimo de tienda).
+  - Lo que tienen en común: **el modelo juzga las palabras, no la intención**. La conducta del remitente es lo que cuenta, y no está en los datos.
+
+#### Para cerrar
+- **Para comentar:** no borrar correos solo por lo que diga el modelo: **carpeta de spam revisable**.
+- **Tarjeta de ejemplo:**
+  - Mi app decide **si un correo es spam** a partir de **sus palabras (TF-IDF + logística)**.
+  - Antes de modelar tuve que **separar los datos y comparar con las pistas hechas a mano (árbol y bosque)**.
+  - Acierta **0,98** en el examen, frente a **0,58** del modelo tonto.
+  - No debe usarse para **borrar correos automáticamente**: debe ir a una carpeta que se pueda revisar.
